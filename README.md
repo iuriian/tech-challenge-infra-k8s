@@ -22,11 +22,13 @@ cuida do que dura; o pipeline, do que muda.
 gcloud auth application-default login
 
 cd terraform
-cp staging.tfvars terraform.tfvars   # ajuste project_id
-terraform init
-terraform plan
-terraform apply
+terraform init -reconfigure -backend-config=environments/staging.gcs.tfbackend
+terraform plan -var-file=environments/staging.tfvars
+terraform apply -var-file=environments/staging.tfvars
 ```
+
+Na prática o `apply` sai pelo pipeline (seção **Pipeline**); o caminho local
+serve para inspeção.
 
 O `apply` leva de 5 a 10 minutos (criar cluster no GKE é lento). Ao final:
 
@@ -38,19 +40,75 @@ kubectl get nodes
 
 ### State remoto
 
-O state local funciona para uma pessoa, mas some se você trocar de máquina e não
-suporta dois `apply` concorrentes. Para usar GCS:
-
-```bash
-gcloud storage buckets create gs://SEU_PROJECT_ID-tfstate \
-  --project SEU_PROJECT_ID --location us-central1
-gcloud storage buckets update gs://SEU_PROJECT_ID-tfstate --versioning
-```
-
-Descomente o bloco `backend "gcs"` em `versions.tf` e rode
-`terraform init -migrate-state`.
+O state vive no GCS, em `gs://tech-challenge-507123-tfstate` com versionamento,
+sob o prefixo `tech-challenge/infra-k8s/staging`. O `backend "gcs"` em
+`versions.tf` é parcial: bucket e prefixo vêm de
+`environments/staging.gcs.tfbackend`, passado no `init -backend-config`.
 
 **Nunca versione o `.tfstate`** — ele grava valores `sensitive` em texto puro.
+
+## Pipeline
+
+| Workflow | Quando | O que faz |
+|---|---|---|
+| `terraform-ci.yml` | PR que toca `terraform/**` | `fmt`, `validate` e `plan` no summary |
+| `terraform-cd.yml` | push na `main`, ou **Run workflow** | `plan` + `apply` e `outputs` no summary |
+
+O `workflow_dispatch` existe para o primeiro provisionamento: o push que *cria*
+uma branch não carrega arquivos alterados, então o filtro de `paths` ignora o
+evento.
+
+**Aplique este repositório primeiro.** O `tech-challenge-database` lê a VPC pelo
+nome (`data "google_compute_network"`) e falha com
+`networks/default not found` enquanto ela não existir.
+
+## As duas service accounts
+
+Não confunda: são contas diferentes, com privilégios muito diferentes.
+
+| Service account | Criada por | Usada por | Papéis |
+|---|---|---|---|
+| `github-actions-infra` | bootstrap manual (abaixo) | os workflows **deste** repositório | admin de rede, GKE, APIs, IAM e segredos |
+| `github-actions-cd` | o Terraform daqui (`iam.tf`) | `cd-staging.yml` da app, para o `kubectl` | só `roles/container.developer` |
+
+A segunda não consegue aplicar este Terraform — ela só fala com o cluster já
+criado.
+
+### Bootstrap da `github-actions-infra` (uma vez)
+
+```bash
+PROJECT=tech-challenge-507123
+SA=github-actions-infra@${PROJECT}.iam.gserviceaccount.com
+
+gcloud iam service-accounts create github-actions-infra \
+  --project "$PROJECT" --display-name "GitHub Actions - tech-challenge-infra-k8s"
+
+for ROLE in \
+  roles/container.admin \
+  roles/compute.networkAdmin \
+  roles/serviceusage.serviceUsageAdmin \
+  roles/iam.serviceAccountAdmin \
+  roles/iam.serviceAccountUser \
+  roles/resourcemanager.projectIamAdmin \
+  roles/secretmanager.admin; do
+  gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member "serviceAccount:$SA" --role "$ROLE" --condition=None
+done
+
+# State: acesso so ao bucket, nao ao projeto inteiro
+gcloud storage buckets add-iam-policy-binding gs://${PROJECT}-tfstate \
+  --member "serviceAccount:$SA" --role roles/storage.objectAdmin
+```
+
+| Papel | Para quê |
+|---|---|
+| `container.admin` | cluster e node pool |
+| `compute.networkAdmin` | VPC e subnet |
+| `serviceUsageAdmin` | habilitar APIs |
+| `iam.serviceAccountAdmin` | criar a SA do CI da app |
+| `iam.serviceAccountUser` | usar a SA padrão de compute nos nós do GKE |
+| `projectIamAdmin` | conceder `container.developer` à SA do CI da app |
+| `secretmanager.admin` | criar a senha do banco e dar acesso ao CI da app |
 
 ## Chave do `GCP_SA_KEY`
 
@@ -58,12 +116,17 @@ Não é criada pelo Terraform de propósito: `google_service_account_key` gravar
 chave privada no state.
 
 ```bash
+# Chave da SA deste pipeline: Environment "staging" DESTE repositorio
+gcloud iam service-accounts keys create key.json \
+  --iam-account github-actions-infra@tech-challenge-507123.iam.gserviceaccount.com
+
+# Chave da SA do CI da app: Environment "staging" do repositorio da aplicacao
 SA=$(terraform output -raw ci_service_account_email)
-gcloud iam service-accounts keys create key.json --iam-account "$SA"
+gcloud iam service-accounts keys create key-app.json --iam-account "$SA"
 ```
 
-Cole o conteúdo em `Settings → Environments → staging → GCP_SA_KEY` e **apague o
-`key.json`**.
+Cole o conteúdo em `Settings → Environments → staging → GCP_SA_KEY` do
+repositório correspondente e **apague os arquivos de chave**.
 
 > Próximo passo natural: Workload Identity Federation elimina a chave de longa
 > duração — o Actions autentica por OIDC e não há segredo para rotacionar.
