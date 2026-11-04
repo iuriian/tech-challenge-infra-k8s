@@ -17,8 +17,8 @@ resource "google_container_cluster" "staging" {
   # padrao (true) para nao apagar o cluster por acidente.
   deletion_protection = false
 
-  network         = var.network
-  subnetwork      = var.subnetwork
+  network         = google_compute_network.vpc.name
+  subnetwork      = google_compute_subnetwork.main.name
   networking_mode = "VPC_NATIVE"
   ip_allocation_policy {}
 
