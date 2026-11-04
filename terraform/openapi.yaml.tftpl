@@ -1,0 +1,633 @@
+# ---------------------------------------------------------------------------
+# Contrato de ROTEAMENTO do API Gateway, nao a documentacao da API.
+#
+# O contrato de referencia continua sendo o OpenAPI 3 que o springdoc gera em
+# /v3/api-docs a partir das anotacoes do codigo. Aqui esta so o que o ESPv2
+# precisa para decidir o que entra: metodo, path e exigencia de token valido.
+# Nao ha schema de corpo nem de resposta -- mante-los em dois lugares
+# garantiria que um dos dois ficaria desatualizado.
+#
+# Por que OpenAPI 2.0 e nao 3.x: so o 2.0 aceita o curinga duplo {x=**}, usado
+# no fim do arquivo para a Swagger UI e para os subpaths do springdoc.
+#
+# O que o gateway NAO faz: papeis. O JWT traz o claim roles, mas quem decide se
+# um MECANICO pode deletar um cliente e o @RolesAllowed da aplicacao. O gateway
+# para o anonimo e o token invalido; o papel errado morre no app.
+#
+# Em toda operacao abaixo, portanto:
+#   401  token ausente, expirado, ou com assinatura, iss ou aud invalidos (gateway)
+#   403  token valido, papel sem permissao para a operacao (aplicacao)
+#   404  path nao declarado nesta spec (gateway) ou recurso inexistente (app)
+# Por isso esses tres nao se repetem em cada entrada.
+# ---------------------------------------------------------------------------
+swagger: "2.0"
+info:
+  title: oficina-api
+  description: >-
+    Sistema integrado de atendimento e execucao de servicos de uma oficina
+    mecanica. Borda publica da aplicacao Kotlin/Spring Boot que roda no cluster
+    GKE: termina o TLS, valida o JWT emitido pelo oficina-auth e repassa a
+    requisicao com o path intacto.
+  version: "2.0.0"
+schemes:
+  - https
+produces:
+  - application/json
+consumes:
+  - application/json
+
+# Backend declarado no topo: vale para todas as operacoes e, nessa posicao, o
+# path_translation ja seria APPEND_PATH_TO_ADDRESS por padrao -- explicito
+# porque e dele que tudo aqui depende. O ESPv2 repassa o path original sem
+# reescrever: quem casa a rota de verdade e o Spring. Uma consequencia util e
+# que paths ambiguos para o matcher do gateway (/catalogo/servicos/todos casa
+# tambem com /catalogo/servicos/{id}) chegam corretos ao backend de qualquer
+# forma.
+#
+# address em http:// e por hostname: o ESPv2 resolve o backend por DNS e nao
+# roteia para IP da VPC. O sslip.io devolve no DNS o IP embutido no proprio
+# hostname, sem dominio para registrar nem zona para manter. O salto
+# gateway -> LB sai sem TLS, mas nao deixa a rede do Google (mesma regiao).
+#
+# deadline de 30s contra os 15s do padrao: a primeira requisicao depois de um
+# rollout paga JIT da JVM e abertura do pool do Hikari.
+x-google-backend:
+  address: http://${app_lb_host}
+  path_translation: APPEND_PATH_TO_ADDRESS
+  deadline: 30.0
+
+# Validacao do token na borda: o gateway busca o JWKS do oficina-auth e checa
+# assinatura, iss e aud antes de encostar no cluster. O header Authorization
+# original segue para o backend, entao o NimbusJwtDecoder da aplicacao valida
+# de novo -- de proposito: o IP do Service continua publico e a aplicacao nao
+# pode depender de ninguem para se defender.
+securityDefinitions:
+  oficina_jwt:
+    # oauth2 com flow implicit e a forma que o Swagger 2.0 tem de declarar um
+    # bearer JWT; authorizationUrl vazio porque quem emite o token e o
+    # POST /auth/token do oficina-auth, fora deste gateway.
+    type: oauth2
+    flow: implicit
+    authorizationUrl: ""
+    x-google-issuer: "${auth_issuer_uri}"
+    x-google-jwks_uri: "${auth_issuer_uri}/.well-known/jwks.json"
+    x-google-audiences: "${auth_audience}"
+
+# Padrao da API: tudo exige token. As excecoes declaram security: [] e sao
+# apenas tres, no fim do arquivo.
+security:
+  - oficina_jwt: []
+
+paths:
+  # -------------------------------------------------------------------------
+  # Clientes
+  # -------------------------------------------------------------------------
+  /api/v2/clientes:
+    post:
+      operationId: clienteCadastrar
+      summary: Cadastra um novo cliente
+      responses:
+        "201":
+          description: Cliente criado
+        "400":
+          description: Dados invalidos
+    get:
+      operationId: clienteListarTodos
+      summary: Lista todos os clientes
+      responses:
+        "200":
+          description: Lista de clientes
+  /api/v2/clientes/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        type: string
+        description: ID do cliente
+    get:
+      operationId: clienteBuscarPorId
+      summary: Busca um cliente pelo ID
+      responses:
+        "200":
+          description: Cliente encontrado
+    put:
+      operationId: clienteAlterar
+      summary: Altera os dados de um cliente
+      responses:
+        "200":
+          description: Cliente alterado
+        "400":
+          description: Dados invalidos
+    delete:
+      operationId: clienteDeletar
+      summary: Remove um cliente
+      responses:
+        "204":
+          description: Cliente removido
+  /api/v2/clientes/nome/{nome}:
+    get:
+      operationId: clienteBuscarPorNome
+      summary: Busca um cliente pelo nome
+      parameters:
+        - name: nome
+          in: path
+          required: true
+          type: string
+          description: Nome do cliente
+      responses:
+        "200":
+          description: Cliente encontrado
+  /api/v2/clientes/documento/{documentoNumero}:
+    get:
+      operationId: clienteBuscarPorDocumento
+      summary: Busca um cliente pelo numero do documento
+      parameters:
+        - name: documentoNumero
+          in: path
+          required: true
+          type: string
+          description: Numero do documento, apenas digitos
+      responses:
+        "200":
+          description: Cliente encontrado
+
+  # -------------------------------------------------------------------------
+  # Funcionarios
+  # -------------------------------------------------------------------------
+  /api/v2/funcionarios:
+    post:
+      operationId: funcionarioCadastrar
+      summary: Cadastra um novo funcionario
+      responses:
+        "201":
+          description: Funcionario criado
+        "400":
+          description: Dados invalidos
+    get:
+      operationId: funcionarioListarTodos
+      summary: Lista todos os funcionarios
+      responses:
+        "200":
+          description: Lista de funcionarios
+  /api/v2/funcionarios/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        type: string
+        description: ID do funcionario
+    put:
+      operationId: funcionarioAlterar
+      summary: Altera os dados de um funcionario
+      responses:
+        "200":
+          description: Funcionario alterado
+        "400":
+          description: Dados invalidos
+    delete:
+      operationId: funcionarioDeletar
+      summary: Remove um funcionario
+      responses:
+        "204":
+          description: Funcionario removido
+  # A leitura por ID tem o prefixo /id/ no controller e nao e simetrica ao PUT
+  # e ao DELETE acima. A spec reflete a aplicacao, nao a corrige.
+  /api/v2/funcionarios/id/{id}:
+    get:
+      operationId: funcionarioBuscarPorId
+      summary: Busca um funcionario pelo ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+          description: ID do funcionario
+      responses:
+        "200":
+          description: Funcionario encontrado
+  /api/v2/funcionarios/nome/{nome}:
+    get:
+      operationId: funcionarioBuscarPorNome
+      summary: Busca um funcionario pelo nome
+      parameters:
+        - name: nome
+          in: path
+          required: true
+          type: string
+          description: Nome do funcionario
+      responses:
+        "200":
+          description: Funcionario encontrado
+
+  # -------------------------------------------------------------------------
+  # Ordens de servico
+  # -------------------------------------------------------------------------
+  /api/v2/servicos:
+    post:
+      operationId: ordemServicoCriar
+      summary: Cria uma ordem de servico
+      responses:
+        "201":
+          description: Ordem de servico criada
+        "400":
+          description: Dados invalidos
+    get:
+      operationId: ordemServicoListarTodos
+      summary: Lista todas as ordens de servico
+      responses:
+        "200":
+          description: Lista de ordens de servico
+  /api/v2/servicos/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        type: string
+        description: ID da ordem de servico
+    get:
+      operationId: ordemServicoBuscarPorId
+      summary: Busca uma ordem de servico pelo ID
+      responses:
+        "200":
+          description: Ordem de servico encontrada
+    put:
+      operationId: ordemServicoAtualizar
+      summary: Atualiza uma ordem de servico
+      responses:
+        "200":
+          description: Ordem de servico atualizada
+        "400":
+          description: Dados invalidos
+    delete:
+      operationId: ordemServicoDeletar
+      summary: Exclui uma ordem de servico
+      responses:
+        "204":
+          description: Ordem de servico excluida
+  /api/v2/servicos/{id}/orcamento:
+    get:
+      operationId: ordemServicoObterOrcamento
+      summary: Obtem o orcamento da ordem de servico
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+          description: ID da ordem de servico
+      responses:
+        "200":
+          description: Orcamento da ordem de servico
+  /api/v2/servicos/{id}/avancar:
+    patch:
+      operationId: ordemServicoAvancarStatus
+      summary: Avanca a ordem de servico para o proximo status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+          description: ID da ordem de servico
+      responses:
+        "200":
+          description: Status avancado
+        "409":
+          description: Transicao nao permitida pela maquina de estados
+  /api/v2/servicos/{id}/status:
+    patch:
+      operationId: ordemServicoAlterarStatus
+      summary: Altera o status da ordem de servico
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+          description: ID da ordem de servico
+      responses:
+        "200":
+          description: Status alterado
+        "400":
+          description: Status invalido
+        "409":
+          description: Transicao nao permitida pela maquina de estados
+  /api/v2/servicos/cliente/{clienteId}:
+    get:
+      operationId: ordemServicoListarPorCliente
+      summary: Lista as ordens de servico de um cliente
+      parameters:
+        - name: clienteId
+          in: path
+          required: true
+          type: string
+          description: ID do cliente
+      responses:
+        "200":
+          description: Lista de ordens de servico do cliente
+  /api/v2/servicos/metricas/tempo-medio:
+    get:
+      operationId: ordemServicoTempoMedioExecucao
+      summary: Tempo medio de execucao das ordens finalizadas
+      responses:
+        "200":
+          description: Metricas de tempo
+
+  # -------------------------------------------------------------------------
+  # Pecas e estoque
+  # -------------------------------------------------------------------------
+  /api/v2/pecas:
+    post:
+      operationId: pecaCadastrar
+      summary: Cadastra uma nova peca
+      responses:
+        "201":
+          description: Peca criada
+        "400":
+          description: Dados invalidos
+        "409":
+          description: Codigo da peca ja existe
+    get:
+      operationId: pecaListar
+      summary: Lista todas as pecas
+      responses:
+        "200":
+          description: Lista de pecas
+  /api/v2/pecas/{codigo}:
+    parameters:
+      - name: codigo
+        in: path
+        required: true
+        type: string
+        description: Codigo da peca
+    put:
+      operationId: pecaAtualizar
+      summary: Atualiza uma peca
+      responses:
+        "200":
+          description: Peca atualizada
+        "400":
+          description: Dados invalidos
+    delete:
+      operationId: pecaDesativar
+      summary: Desativa uma peca, remocao logica
+      responses:
+        "204":
+          description: Peca desativada
+  /api/v2/pecas/codigo/{codigo}:
+    get:
+      operationId: pecaBuscarPorCodigo
+      summary: Busca uma peca pelo codigo
+      parameters:
+        - name: codigo
+          in: path
+          required: true
+          type: string
+          description: Codigo da peca
+      responses:
+        "200":
+          description: Peca encontrada
+  /api/v2/pecas/{codigo}/estoque/retirar:
+    patch:
+      operationId: pecaRetirarEstoque
+      summary: Retira pecas do estoque
+      parameters:
+        - name: codigo
+          in: path
+          required: true
+          type: string
+          description: Codigo da peca
+        - name: qtd
+          in: query
+          required: true
+          type: integer
+          description: Quantidade a retirar
+      responses:
+        "200":
+          description: Estoque atualizado
+        "409":
+          description: Estoque insuficiente
+  /api/v2/pecas/{codigo}/estoque/repor:
+    patch:
+      operationId: pecaReporEstoque
+      summary: Repoe pecas no estoque
+      parameters:
+        - name: codigo
+          in: path
+          required: true
+          type: string
+          description: Codigo da peca
+        - name: qtd
+          in: query
+          required: true
+          type: integer
+          description: Quantidade a repor
+      responses:
+        "200":
+          description: Estoque atualizado
+  /api/v2/pecas/{codigo}/reativar:
+    patch:
+      operationId: pecaReativar
+      summary: Reativa uma peca desativada
+      parameters:
+        - name: codigo
+          in: path
+          required: true
+          type: string
+          description: Codigo da peca
+      responses:
+        "200":
+          description: Peca reativada
+
+  # -------------------------------------------------------------------------
+  # Catalogo de servicos
+  # -------------------------------------------------------------------------
+  /api/v2/catalogo/servicos:
+    post:
+      operationId: catalogoServicoCriar
+      summary: Cadastra um servico no catalogo
+      responses:
+        "201":
+          description: Servico criado
+        "400":
+          description: Dados invalidos
+    get:
+      operationId: catalogoServicoListarAtivos
+      summary: Lista os servicos ativos do catalogo
+      responses:
+        "200":
+          description: Lista de servicos ativos
+  /api/v2/catalogo/servicos/todos:
+    get:
+      operationId: catalogoServicoListarTodos
+      summary: Lista servicos ativos e inativos
+      responses:
+        "200":
+          description: Lista completa de servicos
+  /api/v2/catalogo/servicos/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        type: string
+        description: ID do servico
+    get:
+      operationId: catalogoServicoBuscar
+      summary: Busca um servico do catalogo
+      responses:
+        "200":
+          description: Servico encontrado
+    put:
+      operationId: catalogoServicoAtualizar
+      summary: Atualiza um servico do catalogo
+      responses:
+        "200":
+          description: Servico atualizado
+        "400":
+          description: Dados invalidos
+    delete:
+      operationId: catalogoServicoDesativar
+      summary: Desativa um servico, remocao logica
+      responses:
+        "204":
+          description: Servico desativado
+  /api/v2/catalogo/servicos/{id}/reativar:
+    patch:
+      operationId: catalogoServicoReativar
+      summary: Reativa um servico desativado
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+          description: ID do servico
+      responses:
+        "200":
+          description: Servico reativado
+
+  # -------------------------------------------------------------------------
+  # Veiculos
+  # -------------------------------------------------------------------------
+  /api/v2/veiculos:
+    post:
+      operationId: veiculoCriar
+      summary: Cadastra um novo veiculo
+      responses:
+        "201":
+          description: Veiculo criado
+        "400":
+          description: Dados invalidos
+    get:
+      operationId: veiculoListarTodos
+      summary: Lista todos os veiculos
+      responses:
+        "200":
+          description: Lista de veiculos
+  /api/v2/veiculos/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        type: string
+        description: ID do veiculo
+    get:
+      operationId: veiculoBuscarPorId
+      summary: Busca um veiculo pelo ID
+      responses:
+        "200":
+          description: Veiculo encontrado
+    put:
+      operationId: veiculoAtualizar
+      summary: Atualiza um veiculo
+      responses:
+        "200":
+          description: Veiculo atualizado
+        "400":
+          description: Dados invalidos
+    delete:
+      operationId: veiculoRemover
+      summary: Remove um veiculo
+      responses:
+        "204":
+          description: Veiculo removido
+  /api/v2/veiculos/placa/{placa}:
+    get:
+      operationId: veiculoBuscarPorPlaca
+      summary: Busca um veiculo pela placa
+      parameters:
+        - name: placa
+          in: path
+          required: true
+          type: string
+          description: Placa do veiculo
+      responses:
+        "200":
+          description: Veiculo encontrado
+  /api/v2/veiculos/motorista/{motoristaId}:
+    get:
+      operationId: veiculoBuscarPorProprietario
+      summary: Lista os veiculos de um cliente
+      parameters:
+        - name: motoristaId
+          in: path
+          required: true
+          type: string
+          description: ID do cliente proprietario
+      responses:
+        "200":
+          description: Lista de veiculos do cliente
+
+  # -------------------------------------------------------------------------
+  # Operacao e documentacao
+  #
+  # As tres excecoes ao security global. O resto do /actuator fica de fora de
+  # proposito: nao esta declarado aqui, entao o gateway responde 404 -- metricas
+  # e env nao sao assunto de quem chega pela internet.
+  # -------------------------------------------------------------------------
+  /actuator/health:
+    get:
+      operationId: health
+      summary: Health check agregado, usado pelo smoke test do CD
+      security: []
+      responses:
+        "200":
+          description: Aplicacao saudavel
+        "503":
+          description: Aplicacao degradada
+  /v3/api-docs:
+    get:
+      operationId: apiDocs
+      summary: OpenAPI 3 do springdoc, o contrato de referencia
+      security: []
+      responses:
+        "200":
+          description: Documento OpenAPI
+  # O springdoc serve /v3/api-docs/swagger-config e os grupos sob o mesmo
+  # prefixo; o curinga duplo cobre todos sem uma entrada para cada.
+  /v3/api-docs/{resto=**}:
+    get:
+      operationId: apiDocsSubpaths
+      summary: Configuracao e grupos do springdoc
+      security: []
+      parameters:
+        - name: resto
+          in: path
+          required: true
+          type: string
+      responses:
+        "200":
+          description: Documento OpenAPI
+  /swagger-ui/{resto=**}:
+    get:
+      operationId: swaggerUi
+      summary: Swagger UI, HTML e assets estaticos
+      security: []
+      produces:
+        - text/html
+        - application/javascript
+        - text/css
+      parameters:
+        - name: resto
+          in: path
+          required: true
+          type: string
+      responses:
+        "200":
+          description: Recurso da Swagger UI
