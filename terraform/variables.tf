@@ -120,10 +120,11 @@ variable "auth_audience" {
   default     = "oficina"
 }
 
-# A SA do pipeline precisa de roles/servicemanagement.serviceConsumer para
-# habilitar o managed service do gateway (gateway.tf). O binding e declarado
-# aqui, e nao concedido a mao no bootstrap, para que um projeto novo nao morra
-# no ultimo recurso do apply -- foi exatamente o que aconteceu neste projeto.
+# A SA do pipeline precisa de roles/servicemanagement.editor para habilitar o
+# managed service do gateway (gateway.tf) -- o gateway.tf explica por que e o
+# editor, e nao o serviceConsumer que a documentacao sugere. O binding e
+# declarado aqui, e nao concedido a mao no bootstrap, para que um projeto novo
+# nao morra no ultimo recurso do apply -- foi o que aconteceu neste projeto.
 #
 # O email e explicito, e nao lido de data.google_client_openid_userinfo, de
 # proposito: com a identidade detectada em tempo de execucao, um apply local
@@ -133,7 +134,7 @@ variable "auth_audience" {
 # Vazio desliga o binding: use assim quando quem aplica e um humano com owner,
 # que ja carrega servicemanagement.services.bind.
 variable "infra_service_account_email" {
-  description = "Email da SA que aplica este Terraform. Recebe servicemanagement.serviceConsumer para habilitar o managed service do gateway. Vazio = nao gerencia o binding."
+  description = "Email da SA que aplica este Terraform. Recebe servicemanagement.editor para habilitar o managed service do gateway. Vazio = nao gerencia o binding."
   type        = string
   default     = ""
 }

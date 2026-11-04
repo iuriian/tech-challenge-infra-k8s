@@ -86,12 +86,32 @@ resource "google_api_gateway_gateway" "app" {
   api_config = google_api_gateway_api_config.app.id
 }
 
-# roles/servicemanagement.serviceConsumer na SA do pipeline, pela permissao
-# servicemanagement.services.bind, que o google_project_service abaixo exige
-# para habilitar o managed service. Ela NAO esta em
-# serviceusage.serviceUsageAdmin, e a sua falta nao aparece no plan: o apply
-# cria api, api-config e gateway e so morre no ultimo recurso, com
+# A SA do pipeline precisa da permissao servicemanagement.services.bind, que o
+# google_project_service abaixo exige para habilitar o managed service. Ela NAO
+# esta em serviceusage.serviceUsageAdmin, e a sua falta nao aparece no plan: o
+# apply cria api, api-config e gateway e so morre no ultimo recurso, com
 # 403 error_code=110002.
+#
+# O PAPEL AQUI NAO E O serviceConsumer. roles/servicemanagement.serviceConsumer
+# e o papel que a documentacao associa a essa permissao, mas ele so e vinculavel
+# em um recurso de servico -- em projeto a API recusa com "Role
+# roles/servicemanagement.serviceConsumer is not supported for this resource",
+# badRequest 400. Conferir com:
+#
+#   gcloud iam list-grantable-roles \
+#     //cloudresourcemanager.googleapis.com/projects/SEU_PROJECT
+#
+# Ele nao aparece na lista. Era o papel que o bootstrap do README mandava
+# conceder, e o add-iam-policy-binding falhava no meio do loop sem parar o
+# resto: foi assim que o projeto ficou sem a permissao e o apply morreu no 403.
+#
+# Dos papeis vinculaveis em projeto, dois carregam o services.bind:
+# servicemanagement.admin (37 permissoes, inclui setIamPolicy e gestao de
+# tenancy) e servicemanagement.editor (11). Fica o editor, o menor dos dois.
+#
+# Um custom role com apenas o services.bind seria menor ainda, mas criar um
+# exige roles/iam.roleAdmin na SA -- que permite definir qualquer papel, e e
+# mais poderoso do que o editor que se queria evitar. Nao compensa.
 #
 # Declarar o binding aqui, em vez de concede-lo a mao no bootstrap, e o que
 # impede essa falha de voltar em um projeto novo -- a lista de papeis do README
@@ -107,7 +127,7 @@ resource "google_project_iam_member" "infra_service_management" {
   count = var.infra_service_account_email == "" ? 0 : 1
 
   project = var.project_id
-  role    = "roles/servicemanagement.serviceConsumer"
+  role    = "roles/servicemanagement.editor"
   member  = "serviceAccount:${var.infra_service_account_email}"
 }
 

@@ -13,5 +13,5 @@ auth_state_bucket = "tech-challenge-507123-tfstate"
 auth_state_prefix = "tech-challenge/auth/staging"
 
 # SA que o terraform-cd.yml usa (secret GCP_SA_KEY). Recebe por Terraform o
-# servicemanagement.serviceConsumer que o managed service do gateway exige.
+# servicemanagement.editor que o managed service do gateway exige.
 infra_service_account_email = "github-actions-infra@tech-challenge-507123.iam.gserviceaccount.com"

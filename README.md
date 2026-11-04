@@ -98,8 +98,12 @@ for ROLE in \
   roles/resourcemanager.projectIamAdmin \
   roles/apigateway.admin \
   roles/secretmanager.admin; do
+  # O || break existe porque este loop já falhou silencioso uma vez, num papel
+  # que não era vinculável em projeto, e seguiu para os próximos como se nada
+  # tivesse acontecido.
   gcloud projects add-iam-policy-binding "$PROJECT" \
-    --member "serviceAccount:$SA" --role "$ROLE" --condition=None
+    --member "serviceAccount:$SA" --role "$ROLE" --condition=None \
+    || { echo "FALHOU ao conceder $ROLE"; break; }
 done
 
 # State: acesso so ao bucket, nao ao projeto inteiro
@@ -114,9 +118,20 @@ gcloud storage buckets add-iam-policy-binding gs://${PROJECT}-tfstate \
 | `serviceUsageAdmin` | habilitar APIs |
 | `iam.serviceAccountAdmin` | criar a SA do CI da app |
 | `iam.serviceAccountUser` | usar a SA padrão de compute nos nós do GKE |
-| `projectIamAdmin` | conceder `container.developer` à SA do CI da app, e conceder a **si mesma** o `servicemanagement.serviceConsumer` que o `gateway.tf` exige |
+| `projectIamAdmin` | conceder `container.developer` à SA do CI da app, e conceder a **si mesma** o `servicemanagement.editor` que o `gateway.tf` exige |
 | `apigateway.admin` | API, api-config e gateway (`gateway.tf`) |
-| `servicemanagement.serviceConsumer` | habilitar o managed service do gateway. Carrega uma única permissão, `servicemanagement.services.bind`, que **não** está em `serviceUsageAdmin`. **Não entra no loop acima**: quem concede é o próprio Terraform, em `gateway.tf` — esta lista já divergiu do projeto uma vez, e o apply morreu no último recurso com 403 |
+| `servicemanagement.editor` | habilitar o managed service do gateway, pela permissão `servicemanagement.services.bind` — que **não** está em `serviceUsageAdmin`. **Não entra no loop acima**: quem concede é o próprio Terraform, em `gateway.tf` |
+
+> **Não use `roles/servicemanagement.serviceConsumer` aqui.** É o papel que a
+> documentação associa ao `services.bind`, e era o que esta lista mandava
+> conceder, mas ele **não é vinculável em projeto**: o
+> `gcloud projects add-iam-policy-binding` falha com `Role
+> roles/servicemanagement.serviceConsumer is not supported for this resource`
+> (400). Como o loop acima não para no primeiro erro, a falha passou batida e o
+> projeto ficou sem a permissão — o apply só morreu bem depois, no último
+> recurso, com um 403 que não parecia ter relação com o bootstrap. Confira o que
+> é vinculável com
+> `gcloud iam list-grantable-roles //cloudresourcemanager.googleapis.com/projects/$PROJECT`.
 | `secretmanager.admin` | criar a senha do banco e dar acesso ao CI da app |
 
 ## Chave do `GCP_SA_KEY`
