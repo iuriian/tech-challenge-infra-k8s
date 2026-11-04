@@ -80,6 +80,11 @@ criado.
 PROJECT=tech-challenge-507123
 SA=github-actions-infra@${PROJECT}.iam.gserviceaccount.com
 
+# O provider usa estas duas para gerenciar os google_project_service de
+# apis.tf. Sem elas o plan falha no refresh, antes de avaliar qualquer
+# mudanca, e o Terraform nao consegue se desbloquear sozinho.
+gcloud services enable   cloudresourcemanager.googleapis.com   serviceusage.googleapis.com   --project "$PROJECT"
+
 gcloud iam service-accounts create github-actions-infra \
   --project "$PROJECT" --display-name "GitHub Actions - tech-challenge-infra-k8s"
 
