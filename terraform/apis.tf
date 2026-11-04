@@ -1,6 +1,11 @@
 # ---------------------------------------------------------------------------
-# APIs necessarias. Declaradas aqui para que `terraform apply` funcione em um
-# projeto novo sem passos manuais previos.
+# APIs necessarias, para que `terraform apply` nao exija habilitar cada uma na
+# mao em um projeto novo.
+#
+# EXCECAO: cloudresourcemanager.googleapis.com NAO entra aqui. O provider a usa
+# para ler e escrever `google_project_service`, entao desabilitada ela faz este
+# proprio arquivo falhar no refresh - o Terraform nao pode habilitar a API da
+# qual ele depende para habilitar APIs. Habilite uma vez no bootstrap (README).
 #
 # disable_on_destroy = false: desabilitar a API do GKE ao destruir o cluster
 # afetaria qualquer outro recurso do projeto que dependa dela.

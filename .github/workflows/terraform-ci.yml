@@ -1,0 +1,57 @@
+name: Terraform - CI
+
+# Plan em todo PR que toca o terraform. Este repositorio tem um unico
+# ambiente (homologacao), entao nao ha ambiente a resolver pela branch.
+on:
+  pull_request:
+    paths: ["terraform/**", ".github/workflows/terraform-*.yml"]
+
+# Grupo proprio por PR: um plan novo cancela o anterior do mesmo PR,
+# sem disputar fila com o apply (que usa terraform-staging).
+concurrency:
+  group: terraform-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: terraform
+
+jobs:
+  plan:
+    name: Plan (staging)
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Format
+        run: terraform fmt -check -recursive
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Init
+        run: terraform init -input=false -backend-config=environments/staging.gcs.tfbackend
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        # shell bash: traz -o pipefail, senao o tee mascara a falha do plan
+        shell: bash
+        run: |
+          terraform plan -input=false -no-color -lock-timeout=5m \
+            -var-file=environments/staging.tfvars -out=tfplan | tee plan.txt
+          {
+            echo "## Terraform plan (staging)"
+            echo '```'
+            grep -E '^(Plan:|No changes|  [#~+-])' plan.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

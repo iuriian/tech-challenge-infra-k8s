@@ -3,5 +3,10 @@
 *.tfstate.*
 terraform.tfvars
 .terraform.tfstate.lock.info
+# Planos de execucao: podem conter valores sensiveis em texto claro.
+# Gerados pelos workflows em .github/workflows/terraform-*.yml.
+*.tfplan
+tfplan
+plan.txt
 crash*.log
 .idea/

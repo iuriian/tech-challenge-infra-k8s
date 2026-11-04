@@ -1,0 +1,71 @@
+name: Terraform - CD
+
+# main -> aplica a infraestrutura de homologacao.
+#
+# O workflow_dispatch existe para o primeiro provisionamento: o push que cria
+# uma branch nao carrega arquivos alterados, entao o filtro de paths ignora o
+# evento. Ele tambem permite aplicar a partir da develop antes do merge.
+on:
+  push:
+    branches: [main]
+    paths: ["terraform/**", ".github/workflows/terraform-cd.yml"]
+  workflow_dispatch:
+
+# Mesmo grupo do CD do tech-challenge-database nao se aplica aqui: cada
+# repositorio tem a sua propria fila. Dentro deste, um apply por vez.
+concurrency:
+  group: terraform-staging
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: terraform
+
+jobs:
+  apply:
+    name: Apply (staging)
+    runs-on: ubuntu-latest
+    # Configure "Required reviewers" no Environment para aprovar o apply
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Init
+        run: terraform init -input=false -backend-config=environments/staging.gcs.tfbackend
+
+      - name: Plan
+        # shell bash: traz -o pipefail, senao o tee mascara a falha do plan
+        shell: bash
+        run: |
+          terraform plan -input=false -no-color -lock-timeout=5m \
+            -var-file=environments/staging.tfvars -out=tfplan | tee plan.txt
+          {
+            echo "## Terraform plan (staging)"
+            echo '```'
+            grep -E '^(Plan:|No changes|  [#~+-])' plan.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply
+        run: terraform apply -input=false -lock-timeout=5m tfplan
+
+      # Os outros repositorios dependem destes valores: a VPC pelo nome, e o
+      # tech-challenge-database pelo segredo da senha do banco.
+      - name: Outputs
+        run: |
+          {
+            echo "## Outputs"
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
