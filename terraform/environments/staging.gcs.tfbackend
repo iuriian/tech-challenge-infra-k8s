@@ -1,0 +1,2 @@
+bucket = "tech-challenge-507123-tfstate"
+prefix = "tech-challenge/infra-k8s/staging"
