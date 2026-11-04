@@ -1,0 +1,191 @@
+# Terraform — infraestrutura do staging
+
+Provisiona o cluster GKE e a service account do CI. Os workloads continuam em
+`k8s/`, aplicados pelo `k8s/deploy.sh`.
+
+## Fronteira
+
+| Terraform | Resto do repositório |
+|---|---|
+| APIs do GCP, cluster GKE, node pool | `k8s/*/*.yaml` — Deployments, Services, ConfigMaps |
+| Service account do CI e IAM | `cd-staging.yml` — secrets do cluster |
+| | `k8s/deploy.sh` — namespace e ordem de aplicação |
+
+**Por que os workloads não estão aqui.** Eles mudam a cada commit e carregam um
+digest de imagem que o pipeline calcula. Em HCL, cada deploy exigiria um
+`terraform apply`, com o state disputando o cluster com o `kubectl`. Terraform
+cuida do que dura; o pipeline, do que muda.
+
+## Uso
+
+```bash
+gcloud auth application-default login
+
+cd terraform
+cp staging.tfvars terraform.tfvars   # ajuste project_id
+terraform init
+terraform plan
+terraform apply
+```
+
+O `apply` leva de 5 a 10 minutos (criar cluster no GKE é lento). Ao final:
+
+```bash
+terraform output
+eval "$(terraform output -raw get_credentials_command)"
+kubectl get nodes
+```
+
+### State remoto
+
+O state local funciona para uma pessoa, mas some se você trocar de máquina e não
+suporta dois `apply` concorrentes. Para usar GCS:
+
+```bash
+gcloud storage buckets create gs://SEU_PROJECT_ID-tfstate \
+  --project SEU_PROJECT_ID --location us-central1
+gcloud storage buckets update gs://SEU_PROJECT_ID-tfstate --versioning
+```
+
+Descomente o bloco `backend "gcs"` em `versions.tf` e rode
+`terraform init -migrate-state`.
+
+**Nunca versione o `.tfstate`** — ele grava valores `sensitive` em texto puro.
+
+## Chave do `GCP_SA_KEY`
+
+Não é criada pelo Terraform de propósito: `google_service_account_key` gravaria a
+chave privada no state.
+
+```bash
+SA=$(terraform output -raw ci_service_account_email)
+gcloud iam service-accounts keys create key.json --iam-account "$SA"
+```
+
+Cole o conteúdo em `Settings → Environments → staging → GCP_SA_KEY` e **apague o
+`key.json`**.
+
+> Próximo passo natural: Workload Identity Federation elimina a chave de longa
+> duração — o Actions autentica por OIDC e não há segredo para rotacionar.
+
+## Dimensionamento
+
+Requests declarados em `k8s/`:
+
+| | réplicas | CPU | memória |
+|---|---|---|---|
+| app | 1 (HPA até 3) | 100m | 384Mi |
+| **total com 1 réplica** | | **100m** | **384Mi** |
+| **total no teto do HPA** | | **300m** | **1,13Gi** |
+
+> O cluster roda só a aplicação. O banco é um Cloud SQL externo e o emissor de
+> tokens é uma função serverless — nenhum dos dois consome recurso de nó.
+
+Um nó de 4GB não entrega 4GB: o GKE reserva ~1,3GB e ainda roda kube-dns,
+fluentbit e metrics-agent, sobrando ~2,2Gi de memória e ~690m de CPU. **Um**
+`e2-medium` comporta os 300m/1,13Gi do teto do HPA, com folga nas duas dimensões.
+
+Por isso o `app/deployment.yaml` usa `maxSurge: 0`: com um nó só não há CPU para
+dois pods da aplicação simultâneos, e surgir travaria o rollout em `Pending`.
+O custo é uma breve indisponibilidade a cada deploy.
+
+`e2-small` (2GB) **não funciona**: sobram ~600Mi por nó e a aplicação fica em
+`Pending` com `Insufficient memory`.
+
+Se aumentar réplicas ou requests em `k8s/`, revise `node_count` aqui.
+
+## Custo
+
+Com os defaults (1 nó `e2-medium` spot):
+
+| | por mês |
+|---|---|
+| 1× e2-medium **spot** | ~$8 |
+| 2 LoadBalancers | ~$36 |
+| Discos (30GB do nó + 10GB do PVC) | ~$4 |
+| Taxa de gestão do cluster | **$0** — free tier de $74,40/mês cobre um cluster zonal |
+| **total** | **~$48** |
+
+**Spot VMs** dão 60-91% de desconto. A VM pode ser reivindicada com 25s de aviso
+e os pods são reagendados — risco aceitável num staging descartável. Em GKE
+Standard elas recebem apenas labels, sem taint, então nada muda nos manifests.
+Para desligar: `use_spot_vms = false`.
+
+**A economia real vem de não deixar ligado.** Como a infraestrutura é código,
+`terraform destroy` ao terminar e `terraform apply` (10 min) quando precisar leva
+o custo para perto de zero — e exercita o Terraform a cada ciclo.
+
+## Senhas: geradas aqui, guardadas no Secret Manager
+
+`DB_PASSWORD` **não existe mais no GitHub**. O Terraform gera com
+`random_password`, guarda no Secret Manager, e dá à service account do CI
+permissão de leitura **apenas nesse segredo**. O CD o busca em tempo de deploy
+com a própria credencial do GCP.
+
+Ganho: nenhuma pessoa digita, copia ou cola essas senhas.
+
+### O state passa a ser crítico
+
+`random_password` grava o valor gerado **no state do Terraform** — usar o Secret
+Manager não muda isso. Com state local, as senhas ficam num arquivo na sua
+máquina. Por isso o backend GCS deixa de ser recomendação e vira requisito
+prático aqui.
+
+### Consultando as senhas
+
+```bash
+terraform output secret_names   # mostra o nome do segredo
+gcloud secrets versions access latest --secret=tech-challenge-staging-db-password
+```
+
+### Rotação — leia antes de rodar
+
+Recriar a senha do banco **não** basta:
+
+```bash
+terraform taint random_password.db && terraform apply   # NÃO faça isso sozinho
+```
+
+Gerar uma versão nova no Secret Manager não muda a senha do usuário no Cloud SQL:
+a aplicação passaria a usar a nova enquanto o banco continua esperando a antiga.
+Os três passos, nesta ordem:
+
+```bash
+# 1. nova senha no Secret Manager
+terraform taint random_password.db && terraform apply
+
+# 2. aplicar no Cloud SQL (instancia no repo tech-challenge-database)
+gcloud sql users set-password oficina_app \
+  --instance=tech-challenge-staging-pg \
+  --password="$(gcloud secrets versions access latest \
+                 --secret=tech-challenge-staging-db-password)"
+
+# 3. novo deploy, para o pod receber o secret atualizado
+```
+
+O `deploy.sh` injeta o checksum do secret no pod template, então o passo 3
+realmente substitui os pods em vez de virar um apply no-op.
+
+## Alinhamento com o GitHub
+
+Os workflows leem estes três como **secrets** do Environment:
+
+| Terraform | Environments `staging` e `production` |
+|---|---|
+| `cluster_name` | secret `GKE_CLUSTER` |
+| `zone` | secret `GKE_ZONE` |
+| `project_id` | secret `GCP_PROJECT_ID` |
+
+`terraform output github_environment_variables` mostra os três para conferência.
+O workflow detecta ausência, não divergência de valor — se recriar o cluster com
+outro nome, atualize o secret.
+
+## Destruindo
+
+Os `Service` do tipo LoadBalancer criam regras de forwarding fora do controle do
+Terraform. Remova os workloads antes, senão sobram recursos órfãos cobrando:
+
+```bash
+kubectl delete svc app -n tech-challenge-staging
+terraform destroy
+```
