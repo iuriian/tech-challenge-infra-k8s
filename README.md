@@ -97,7 +97,6 @@ for ROLE in \
   roles/iam.serviceAccountUser \
   roles/resourcemanager.projectIamAdmin \
   roles/apigateway.admin \
-  roles/servicemanagement.serviceConsumer \
   roles/secretmanager.admin; do
   gcloud projects add-iam-policy-binding "$PROJECT" \
     --member "serviceAccount:$SA" --role "$ROLE" --condition=None
@@ -115,9 +114,9 @@ gcloud storage buckets add-iam-policy-binding gs://${PROJECT}-tfstate \
 | `serviceUsageAdmin` | habilitar APIs |
 | `iam.serviceAccountAdmin` | criar a SA do CI da app |
 | `iam.serviceAccountUser` | usar a SA padrão de compute nos nós do GKE |
-| `projectIamAdmin` | conceder `container.developer` à SA do CI da app |
+| `projectIamAdmin` | conceder `container.developer` à SA do CI da app, e conceder a **si mesma** o `servicemanagement.serviceConsumer` que o `gateway.tf` exige |
 | `apigateway.admin` | API, api-config e gateway (`gateway.tf`) |
-| `servicemanagement.serviceConsumer` | habilitar o managed service do gateway. Carrega uma única permissão, `servicemanagement.services.bind`, que **não** está em `serviceUsageAdmin` — sem ela o apply cria o gateway e falha no último recurso |
+| `servicemanagement.serviceConsumer` | habilitar o managed service do gateway. Carrega uma única permissão, `servicemanagement.services.bind`, que **não** está em `serviceUsageAdmin`. **Não entra no loop acima**: quem concede é o próprio Terraform, em `gateway.tf` — esta lista já divergiu do projeto uma vez, e o apply morreu no último recurso com 403 |
 | `secretmanager.admin` | criar a senha do banco e dar acesso ao CI da app |
 
 ## Chave do `GCP_SA_KEY`
