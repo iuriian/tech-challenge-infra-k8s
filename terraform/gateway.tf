@@ -42,7 +42,16 @@ resource "google_api_gateway_api" "app" {
   api_id       = "oficina-api"
   display_name = "Oficina - API"
 
-  depends_on = [google_project_service.apigateway]
+  # O binding de servicemanagement (fim do arquivo) entra no depends_on deste
+  # recurso, e nao so no que precisa da permissao, para comprar tempo de
+  # propagacao do IAM: a criacao do gateway leva minutos, e a concessao propaga
+  # nesse intervalo. Num apply em que o gateway ja existe o intervalo nao
+  # existe, e o primeiro apply depois de conceder o papel ainda pode cair em
+  # 403 -- rodar de novo resolve.
+  depends_on = [
+    google_project_service.apigateway,
+    google_project_iam_member.infra_service_management,
+  ]
 }
 
 resource "google_api_gateway_api_config" "app" {
@@ -77,19 +86,67 @@ resource "google_api_gateway_gateway" "app" {
   api_config = google_api_gateway_api_config.app.id
 }
 
+# A SA do pipeline precisa da permissao servicemanagement.services.bind, que o
+# google_project_service abaixo exige para habilitar o managed service. Ela NAO
+# esta em serviceusage.serviceUsageAdmin, e a sua falta nao aparece no plan: o
+# apply cria api, api-config e gateway e so morre no ultimo recurso, com
+# 403 error_code=110002.
+#
+# O PAPEL AQUI NAO E O serviceConsumer. roles/servicemanagement.serviceConsumer
+# e o papel que a documentacao associa a essa permissao, mas ele so e vinculavel
+# em um recurso de servico -- em projeto a API recusa com "Role
+# roles/servicemanagement.serviceConsumer is not supported for this resource",
+# badRequest 400. Conferir com:
+#
+#   gcloud iam list-grantable-roles \
+#     //cloudresourcemanager.googleapis.com/projects/SEU_PROJECT
+#
+# Ele nao aparece na lista. Era o papel que o bootstrap do README mandava
+# conceder, e o add-iam-policy-binding falhava no meio do loop sem parar o
+# resto: foi assim que o projeto ficou sem a permissao e o apply morreu no 403.
+#
+# Dos papeis vinculaveis em projeto, dois carregam o services.bind:
+# servicemanagement.admin (37 permissoes, inclui setIamPolicy e gestao de
+# tenancy) e servicemanagement.editor (11). Fica o editor, o menor dos dois.
+#
+# Um custom role com apenas o services.bind seria menor ainda, mas criar um
+# exige roles/iam.roleAdmin na SA -- que permite definir qualquer papel, e e
+# mais poderoso do que o editor que se queria evitar. Nao compensa.
+#
+# Declarar o binding aqui, em vez de concede-lo a mao no bootstrap, e o que
+# impede essa falha de voltar em um projeto novo -- a lista de papeis do README
+# ja divergiu do projeto uma vez, e foi assim que o 403 apareceu.
+#
+# Exige roles/resourcemanager.projectIamAdmin na propria SA, que ela ja tem
+# para conceder container.developer a SA do CD (iam.tf).
+#
+# google_project_iam_member e NAO autoritativo: administra so este par
+# member/role e nao toca nos outros bindings do projeto. google_project_iam_policy
+# no lugar dele apagaria todo o IAM do projeto no primeiro apply.
+resource "google_project_iam_member" "infra_service_management" {
+  count = var.infra_service_account_email == "" ? 0 : 1
+
+  project = var.project_id
+  role    = "roles/servicemanagement.editor"
+  member  = "serviceAccount:${var.infra_service_account_email}"
+}
+
 # Habilitar o managed service exige que ele ja tenha rollout de configuracao, e
 # quem faz o rollout e a criacao do gateway. Sem o depends_on o Terraform
 # dispara este recurso em paralelo com o gateway e o Service Usage recusa com
 # SERVICE_CONFIG_NOT_FOUND_OR_PERMISSION_DENIED -- o apply de um ambiente novo
 # nunca passaria de primeira.
 #
-# Exige tambem roles/servicemanagement.serviceConsumer na SA do pipeline, pela
-# permissao servicemanagement.services.bind. Ela NAO esta em
-# serviceusage.serviceUsageAdmin: sem o papel, o apply cria api, api-config e
-# gateway e so morre aqui, no ultimo recurso, com 403 error_code=110002.
+# O binding acima tambem entra no depends_on. Ele ja chega por transitividade
+# (api -> api-config -> gateway), mas a dependencia real de permissao e deste
+# recurso, e deixa-la implicita num encadeamento de tres saltos esconde o
+# motivo de o binding existir.
 resource "google_project_service" "api_managed_service" {
   service            = google_api_gateway_api.app.managed_service
   disable_on_destroy = false
 
-  depends_on = [google_api_gateway_gateway.app]
+  depends_on = [
+    google_api_gateway_gateway.app,
+    google_project_iam_member.infra_service_management,
+  ]
 }
