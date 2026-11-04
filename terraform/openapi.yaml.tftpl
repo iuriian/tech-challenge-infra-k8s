@@ -51,10 +51,26 @@ consumes:
 #
 # deadline de 30s contra os 15s do padrao: a primeira requisicao depois de um
 # rollout paga JIT da JVM e abertura do pool do Hikari.
+#
+# disable_auth: true NAO E OPCIONAL AQUI. Sem ele, e sem um jwt_audience, o
+# ESPv2 assume que o backend exige autenticacao do Google: gera um ID token
+# proprio com audience igual ao address, poe esse token no Authorization e
+# move o do cliente para X-Forwarded-Authorization. O NimbusJwtDecoder da
+# aplicacao entao tenta validar o token do Google contra o JWKS do
+# oficina-auth e recusa com 401 e
+# "Signed JWT rejected: Another algorithm expected, or no matching key(s)
+# found" -- inclusive nas rotas com security: [], onde o cliente nao mandou
+# token nenhum e o 401 vem do Spring, nao do gateway.
+#
+# Com disable_auth o ESPv2 nao injeta nada e o Authorization do cliente chega
+# intacto, que e o que a validacao dupla descrita abaixo pressupoe. Nao ha
+# perda: o gateway nunca se autenticou no backend, que e publico por IP de
+# qualquer forma.
 x-google-backend:
   address: http://${app_lb_host}
   path_translation: APPEND_PATH_TO_ADDRESS
   deadline: 30.0
+  disable_auth: true
 
 # Validacao do token na borda: o gateway busca o JWKS do oficina-auth e checa
 # assinatura, iss e aud antes de encostar no cluster. O header Authorization
