@@ -15,6 +15,10 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 8.0"
     }
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 8.0"
+    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
@@ -36,6 +40,12 @@ terraform {
 }
 
 provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+# Os recursos google_api_gateway_* existem so no provider beta.
+provider "google-beta" {
   project = var.project_id
   region  = var.region
 }

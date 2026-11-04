@@ -1,7 +1,7 @@
 # Terraform — infraestrutura do staging
 
-Provisiona o cluster GKE e a service account do CI. Os workloads continuam em
-`k8s/`, aplicados pelo `k8s/deploy.sh`.
+Provisiona o cluster GKE, o API Gateway que publica a API e a service account do
+CI. Os workloads continuam em `k8s/`, aplicados pelo `k8s/deploy.sh`.
 
 ## Fronteira
 
@@ -9,6 +9,7 @@ Provisiona o cluster GKE e a service account do CI. Os workloads continuam em
 |---|---|
 | APIs do GCP, cluster GKE, node pool | `k8s/*/*.yaml` — Deployments, Services, ConfigMaps |
 | Service account do CI e IAM | `cd-staging.yml` — secrets do cluster |
+| API Gateway, a spec que ele serve e o IP reservado do Service | `loadBalancerIP` do Service, substituído pelo `deploy.sh` |
 | | `k8s/deploy.sh` — namespace e ordem de aplicação |
 
 **Por que os workloads não estão aqui.** Eles mudam a cada commit e carregam um
@@ -95,6 +96,7 @@ for ROLE in \
   roles/iam.serviceAccountAdmin \
   roles/iam.serviceAccountUser \
   roles/resourcemanager.projectIamAdmin \
+  roles/apigateway.admin \
   roles/secretmanager.admin; do
   gcloud projects add-iam-policy-binding "$PROJECT" \
     --member "serviceAccount:$SA" --role "$ROLE" --condition=None
@@ -113,6 +115,7 @@ gcloud storage buckets add-iam-policy-binding gs://${PROJECT}-tfstate \
 | `iam.serviceAccountAdmin` | criar a SA do CI da app |
 | `iam.serviceAccountUser` | usar a SA padrão de compute nos nós do GKE |
 | `projectIamAdmin` | conceder `container.developer` à SA do CI da app |
+| `apigateway.admin` | API, api-config e gateway (`gateway.tf`) |
 | `secretmanager.admin` | criar a senha do banco e dar acesso ao CI da app |
 
 ## Chave do `GCP_SA_KEY`
@@ -135,6 +138,63 @@ repositório correspondente e **apague os arquivos de chave**.
 
 > Próximo passo natural: Workload Identity Federation elimina a chave de longa
 > duração — o Actions autentica por OIDC e não há segredo para rotacionar.
+
+## API Gateway
+
+A API é publicada por um API Gateway (`gateway.tf`), não pelo IP do Service. Mesmo
+desenho do `tech-challenge-auth`: ESPv2 gerenciado pelo Google, spec em OpenAPI 2.0
+(`openapi.yaml.tftpl`) e backend por HTTP.
+
+| | |
+|---|---|
+| Entrada | `https://oficina-api-gw-*.uc.gateway.dev`, TLS com certificado do Google |
+| Backend | `http://<ip-do-service>.sslip.io` → Service LoadBalancer do cluster |
+| Faz | termina o TLS, valida assinatura/`iss`/`aud` do JWT, recusa rota não declarada |
+| Não faz | papéis — isso é `@RolesAllowed` na aplicação |
+
+**Por que `sslip.io`.** O API Gateway não roteia para IP da VPC e o ESPv2 resolve o
+backend por DNS: um IP cru em `address` não serve. O `sslip.io` devolve o IP
+embutido no próprio hostname (`34-1-2-3.sslip.io` → `34.1.2.3`), então não há
+domínio para registrar nem zona de DNS para manter. O salto gateway → LB sai sem
+TLS, mas não deixa a rede do Google (mesma região).
+
+**Por que o IP é reservado.** O `google_compute_address.app_lb` existe para o
+backend do gateway ter endereço fixo: com o IP efêmero que o GKE sorteia, recriar o
+Service troca o endereço e o gateway passa a responder 502 sem que nada tenha
+mudado aqui. Preso à forwarding rule do Service, esse IP não é cobrado.
+
+**Por que OpenAPI 2.0 e não 3.x.** Só o 2.0 aceita o curinga duplo `{x=**}`, usado
+nas rotas da Swagger UI e dos subpaths do springdoc.
+
+**A spec é contrato de roteamento, não documentação.** O contrato de referência
+continua sendo o OpenAPI 3 que o springdoc gera em `/v3/api-docs`. Aqui entram só
+método, path e exigência de token — manter schema de corpo nos dois lugares
+garantiria que um deles ficaria desatualizado.
+
+### Depois do apply
+
+```bash
+terraform output -raw api_gateway_url           # URL pública da API
+terraform output -raw app_lb_ip                 # IP do Service
+terraform output -raw api_gateway_backend_host  # hostname sslip.io do backend
+```
+
+Os dois primeiros vão para o Environment `staging` do repositório da aplicação,
+como variables `API_GATEWAY_URL` e `APP_LB_IP`. Sem a segunda, o `deploy.sh` avisa
+e o Service sobe com IP efêmero — e o gateway segue apontando para o endereço
+antigo.
+
+**Ordem no primeiro provisionamento.** O `tech-challenge-auth` precisa estar
+aplicado antes: o `auth.tf` lê o `issuer` do state dele para montar o `jwks_uri`
+do gateway. Depois do apply daqui, rode o CD da aplicação para o Service assumir
+o IP reservado.
+
+### Mudar a spec
+
+Uma api-config é imutável. Com `api_config_id_prefix` e `create_before_destroy`,
+cada `apply` cria uma config nova, aponta o gateway para ela e só então descarta a
+antiga — não há intervalo sem configuração servida. A propagação leva de um a dois
+minutos depois do apply.
 
 ## Dimensionamento
 
@@ -172,6 +232,8 @@ Com os defaults (1 nó `e2-medium` spot):
 | 2 LoadBalancers | ~$36 |
 | Discos (30GB do nó + 10GB do PVC) | ~$4 |
 | Taxa de gestão do cluster | **$0** — free tier de $74,40/mês cobre um cluster zonal |
+| API Gateway | **$0** — até 2 milhões de chamadas/mês, sem cobrança por hora |
+| IP externo reservado do Service | **$0** — IP preso a forwarding rule não é cobrado |
 | **total** | **~$48** |
 
 **Spot VMs** dão 60-91% de desconto. A VM pode ser reivindicada com 25s de aviso

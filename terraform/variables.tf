@@ -94,3 +94,28 @@ variable "ci_service_account_id" {
   type        = string
   default     = "github-actions-cd"
 }
+
+# ---------------------------------------------------------------------------
+# API GATEWAY (gateway.tf)
+# ---------------------------------------------------------------------------
+
+# State do tech-challenge-auth, de onde sai o issuer dos tokens (auth.tf).
+variable "auth_state_bucket" {
+  description = "Bucket do state do tech-challenge-auth"
+  type        = string
+}
+
+variable "auth_state_prefix" {
+  description = "Prefixo do state do tech-challenge-auth no bucket"
+  type        = string
+}
+
+# O servico de autenticacao emite o token com aud=oficina (cd-homolog.yml do
+# tech-challenge-auth) e a aplicacao valida o mesmo valor em AUTH_AUDIENCE. Os
+# tres precisam casar: um aud diferente aqui faz o gateway recusar todo token
+# valido com 401.
+variable "auth_audience" {
+  description = "Audience exigida nos tokens pelo gateway. Deve casar com AUTH_AUDIENCE da aplicacao."
+  type        = string
+  default     = "oficina"
+}
