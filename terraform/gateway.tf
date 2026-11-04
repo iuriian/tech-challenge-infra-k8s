@@ -82,6 +82,11 @@ resource "google_api_gateway_gateway" "app" {
 # dispara este recurso em paralelo com o gateway e o Service Usage recusa com
 # SERVICE_CONFIG_NOT_FOUND_OR_PERMISSION_DENIED -- o apply de um ambiente novo
 # nunca passaria de primeira.
+#
+# Exige tambem roles/servicemanagement.serviceConsumer na SA do pipeline, pela
+# permissao servicemanagement.services.bind. Ela NAO esta em
+# serviceusage.serviceUsageAdmin: sem o papel, o apply cria api, api-config e
+# gateway e so morre aqui, no ultimo recurso, com 403 error_code=110002.
 resource "google_project_service" "api_managed_service" {
   service            = google_api_gateway_api.app.managed_service
   disable_on_destroy = false
