@@ -5,6 +5,7 @@ output "github_environment_variables" {
     GCP_PROJECT_ID = var.project_id
     GKE_CLUSTER    = google_container_cluster.staging.name
     GKE_ZONE       = google_container_cluster.staging.location
+    APP_LB_IP      = google_compute_address.app_lb.address
   }
 }
 
@@ -38,4 +39,19 @@ output "capacity_note" {
     "~${format("%.1f", var.max_node_count * 2.2)}Gi utilizaveis;",
     "a stack pede ~1,25Gi com 1 replica, e o HPA escala ate ${var.max_node_count}.",
   ])
+}
+
+output "api_gateway_url" {
+  description = "URL publica da API. Vai no README e na baseUrl da collection do Postman."
+  value       = "https://${google_api_gateway_gateway.app.default_hostname}"
+}
+
+output "app_lb_ip" {
+  description = "IP reservado do Service LoadBalancer. Entra na variable APP_LB_IP do Environment 'staging'."
+  value       = google_compute_address.app_lb.address
+}
+
+output "api_gateway_backend_host" {
+  description = "Hostname que o gateway usa como backend, para conferir o DNS do sslip.io"
+  value       = local.app_lb_host
 }
